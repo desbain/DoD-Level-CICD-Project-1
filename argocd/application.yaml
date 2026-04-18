@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dod-ops-dashboard
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: dod-ops-dashboard
+    app.kubernetes.io/managed-by: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/Ernest41k/DoD-Level-CICD-Project
+    targetRevision: main
+    path: helm/dod-ops-dashboard
+    helm:
+      valueFiles:
+        - values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dod-production
+
+  syncPolicy:
+    automated:
+      prune: true       # remove resources deleted from Git
+      selfHeal: true    # revert manual changes to the cluster
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  # Ignore the checksum annotation (changes every values.yaml update)
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/metadata/annotations/checksum~1values

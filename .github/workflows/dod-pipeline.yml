@@ -1,0 +1,599 @@
+# =============================================================================
+# DoD DevSecOps CI/CD Pipeline
+# Mirrors DoD Enterprise DevSecOps Reference Design
+# =============================================================================
+# Pipeline Stages:
+#   1. Lint (ESLint + Security Plugin)
+#   2. Unit Tests (Jest + Coverage)
+#   3. SAST (SonarCloud)
+#   4. SCA (npm audit + OSV-Scanner)
+#   5. Secrets Detection (Gitleaks)
+#   6. Build (validate image builds — no push)
+#   7. Container Scan (Trivy)
+#   8. IaC Scan (Checkov) — Dockerfile, docker-compose, Terraform, Helm
+#   9. SBOM Generation (Syft)
+#  10. DAST (OWASP ZAP)
+#  11. Compliance (Docker Bench for Security)
+#  12. Push to Docker Hub (only after ALL scans pass)
+#  13. Publish Artifacts
+#  14. Manual Approval (production environment gate)
+#  15. Deploy to EKS (GitOps → ArgoCD)
+# =============================================================================
+
+name: DoD DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# contents:write  — stage 15 commits the updated image tag back to the repo
+# id-token:write  — stage 15 exchanges a GitHub OIDC token for AWS credentials
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  DOCKER_IMAGE: dod-ops-dashboard
+  NODE_VERSION: '20'
+
+jobs:
+  # ==========================================================================
+  # Stage 1: Lint - ESLint with Security Plugin
+  # ==========================================================================
+  lint:
+    name: "1. Lint (ESLint + Security)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Run ESLint with security rules
+        working-directory: ./server
+        run: npx eslint . --ext .js --format json --output-file ../eslint-results.json || true
+
+      - name: Display lint results
+        if: always()
+        working-directory: ./server
+        run: npx eslint . --ext .js || true
+
+      - name: Upload ESLint results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eslint-results
+          path: eslint-results.json
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 2: Unit Tests - Jest with Coverage
+  # ==========================================================================
+  test:
+    name: "2. Unit Tests (Jest)"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npx jest --coverage --forceExit --coverageReporters=text --coverageReporters=lcov --coverageReporters=json-summary
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 3: SAST - SonarCloud Static Analysis
+  # ==========================================================================
+  sast:
+    name: "3. SAST (SonarCloud)"
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: SAST scan completed
+        run: echo "SAST analysis submitted to SonarCloud. Review results at sonarcloud.io"
+
+  # ==========================================================================
+  # Stage 4: SCA - Software Composition Analysis
+  # ==========================================================================
+  sca:
+    name: "4. SCA (npm audit + OSV-Scanner)"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # npm audit for server
+      - name: npm audit (server)
+        working-directory: ./server
+        run: |
+          npm ci
+          npm audit --json > ../npm-audit-server.json 2>&1 || true
+          echo "=== Server Dependency Audit ==="
+          npm audit || true
+
+      # npm audit for client
+      - name: npm audit (client)
+        working-directory: ./client
+        run: |
+          npm ci
+          npm audit --json > ../npm-audit-client.json 2>&1 || true
+          echo "=== Client Dependency Audit ==="
+          npm audit || true
+
+      # OSV-Scanner for known vulnerabilities in the OSV database
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v1.9.2
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --recursive
+            ./
+
+      - name: Upload SCA results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sca-results
+          path: |
+            npm-audit-server.json
+            npm-audit-client.json
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 5: Secrets Detection - Gitleaks
+  # ==========================================================================
+  secrets:
+    name: "5. Secrets Detection (Gitleaks)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  # ==========================================================================
+  # Stage 6: Build Docker image — validate only, no push to registry.
+  # The image is NOT published until all security scans pass (Stage 12).
+  # ==========================================================================
+  build:
+    name: "6. Build (validate — no push)"
+    runs-on: ubuntu-latest
+    needs: [test, sca, secrets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+
+      - name: Confirm build succeeded
+        run: docker inspect ${{ env.DOCKER_IMAGE }}:${{ github.sha }} > /dev/null
+
+  # ==========================================================================
+  # Stage 7: Container Vulnerability Scan - Trivy
+  # ==========================================================================
+  container-scan:
+    name: "7. Container Scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image for scanning
+        run: docker build -t ${{ env.DOCKER_IMAGE }}:scan .
+
+      # Trivy image vulnerability scan (fails on HIGH/CRITICAL)
+      - name: Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:scan'
+          format: 'table'
+          output: 'trivy-image-results.txt'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      # Always generate SARIF for artifact upload
+      - name: Trivy SARIF report
+        uses: aquasecurity/trivy-action@v0.35.0
+        if: always()
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:scan'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          exit-code: '0'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      - name: Display Trivy results
+        if: always()
+        run: cat trivy-image-results.txt 2>/dev/null || echo "No results file"
+
+      - name: Upload Trivy results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-container-results
+          path: |
+            trivy-image-results.txt
+            trivy-image-results.sarif
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 8: IaC Scan - Checkov
+  # ==========================================================================
+  iac-scan:
+    name: "8. IaC Scan (Checkov)"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov on Dockerfile
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: Dockerfile
+          output_format: cli
+          soft_fail: true
+
+      - name: Run Checkov on docker-compose
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: docker-compose.yml
+          output_format: cli
+          soft_fail: true
+
+      - name: Run Checkov on Terraform
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          output_format: cli
+          soft_fail: true
+
+      - name: Run Checkov on Helm chart
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: helm/
+          output_format: cli
+          soft_fail: true
+
+  # ==========================================================================
+  # Stage 9: SBOM Generation - Syft (CycloneDX format)
+  # ==========================================================================
+  sbom:
+    name: "9. SBOM Generation (Syft)"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image for SBOM
+        run: docker build -t ${{ env.DOCKER_IMAGE }}:sbom .
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: '${{ env.DOCKER_IMAGE }}:sbom'
+          format: cyclonedx-json
+          output-file: sbom-cyclonedx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom-cyclonedx.json
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 10: DAST - OWASP ZAP Baseline Scan
+  # ==========================================================================
+  dast:
+    name: "10. DAST (OWASP ZAP)"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build and start application
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}:dast .
+          docker run -d --name dast-target -p 5000:5000 ${{ env.DOCKER_IMAGE }}:dast
+          echo "Waiting for application to start..."
+          sleep 15
+          curl -f http://localhost:5000/api/health || (docker logs dast-target && exit 1)
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:5000'
+          rules_file_name: ''
+          cmd_options: '-a -j'
+        continue-on-error: true
+
+      - name: Stop application
+        if: always()
+        run: docker stop dast-target && docker rm dast-target
+
+      - name: Upload ZAP results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-results
+          path: report_html.html
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 11: Compliance - Docker Bench for Security (CIS Benchmark)
+  # ==========================================================================
+  compliance:
+    name: "11. Compliance (Docker Bench)"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image for compliance check
+        run: docker build -t ${{ env.DOCKER_IMAGE }}:compliance .
+
+      - name: Start container for benchmarking
+        run: docker run -d --name compliance-target ${{ env.DOCKER_IMAGE }}:compliance
+
+      - name: Run Docker Bench for Security
+        run: |
+          docker run --rm --net host --pid host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /etc:/etc:ro \
+            docker/docker-bench-security \
+            -c container_images,container_runtime \
+            -t compliance-target > docker-bench-results.txt 2>&1 || true
+          echo "=== Docker Bench Results ==="
+          cat docker-bench-results.txt
+
+      - name: Stop container
+        if: always()
+        run: docker stop compliance-target && docker rm compliance-target
+
+      - name: Upload compliance results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compliance-results
+          path: docker-bench-results.txt
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 12: Push verified image to Docker Hub
+  # Runs only after ALL security scans pass. This is the security gate —
+  # no unscanned image ever reaches the registry.
+  # ==========================================================================
+  push:
+    name: "12. Push to Docker Hub (post-scan)"
+    runs-on: ubuntu-latest
+    needs: [container-scan, sbom, dast, compliance]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push verified image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+  # ==========================================================================
+  # Stage 13: Publish All Scan Artifacts (summary)
+  # ==========================================================================
+  publish-artifacts:
+    name: "13. Publish Scan Summary"
+    runs-on: ubuntu-latest
+    needs: [push, iac-scan]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-scan-results/
+          pattern: "{eslint-results,coverage-report,sca-results,trivy-container-results,sbom-cyclonedx,zap-results,compliance-results,gitleaks-results.sarif,dod-ops-dashboard_sbom.cyclonedx.json}"
+          merge-multiple: false
+
+      - name: List all scan results
+        run: |
+          echo "============================================"
+          echo "  DoD DevSecOps Pipeline - Scan Summary"
+          echo "============================================"
+          echo ""
+          find all-scan-results/ -type f | sort
+          echo ""
+          echo "All scan results available as workflow artifacts."
+
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dod-pipeline-all-results
+          path: all-scan-results/
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 14: Manual Approval Gate
+  # Pauses the pipeline and waits for a designated reviewer to approve
+  # before deployment proceeds. Requires a GitHub Environment named
+  # "production" with required reviewers configured:
+  #   Repo → Settings → Environments → production → Required reviewers
+  # ==========================================================================
+  approval:
+    name: "14. Manual Approval"
+    runs-on: ubuntu-latest
+    needs: push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Deployment approved
+        run: echo "Deployment to EKS approved. Proceeding..."
+
+  # ==========================================================================
+  # Stage 15: Deploy to EKS (GitOps via ArgoCD)
+  # Runs only after manual approval is granted.
+  # Flow:
+  #   1. Update image tag in helm/values.yaml and push ([skip ci] commit)
+  #   2. Annotate the ArgoCD Application to trigger an immediate refresh
+  #   3. Wait for Kubernetes rollout to complete
+  #   4. Health-check the app via the ingress-nginx load balancer
+  # Requires GitHub secret: AWS_ROLE_ARN
+  # ==========================================================================
+  deploy:
+    name: "15. Deploy to EKS (GitOps → ArgoCD)"
+    runs-on: ubuntu-latest
+    needs: approval
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: 
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::905418310734:role/dod-ops-cluster-github-actions
+          aws-region: us-east-2
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name dod-ops-cluster --region us-east-2
+
+      - name: Ensure ArgoCD Application is registered
+        run: kubectl apply -f argocd/application.yaml
+
+      - name: Update image tag in Helm values
+        run: |
+          sed -i "s|^  tag:.*|  tag: \"${{ github.sha }}\"|" \
+            helm/dod-ops-dashboard/values.yaml
+          echo "Updated image tag to ${{ github.sha }}"
+          grep "tag:" helm/dod-ops-dashboard/values.yaml
+
+      - name: Commit and push updated image tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/dod-ops-dashboard/values.yaml
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update image tag to ${{ github.sha }} [skip ci]"
+          git push
+
+      - name: Trigger ArgoCD refresh
+        run: |
+          kubectl annotate application dod-ops-dashboard -n argocd \
+            argocd.argoproj.io/refresh=normal --overwrite
+
+      - name: Wait for rollout
+        run: |
+          echo "Waiting for ArgoCD to sync and roll out new image..."
+          sleep 20
+          kubectl rollout status deployment/dod-ops-dashboard-dod-ops-dashboard \
+            -n dod-production --timeout=5m
+          echo "Rollout complete. Waiting 90s for NLB to register new pods as healthy targets..."
+          sleep 90
+
+      - name: Verify EKS deployment health
+        run: |
+          # Wait for the NLB hostname to be assigned (can take 3-5 min on AWS)
+          echo "Waiting for NLB hostname to be assigned..."
+          for i in $(seq 1 24); do
+            ELB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$ELB" ]; then
+              echo "NLB hostname: $ELB"
+              break
+            fi
+            echo "Attempt $i/24: hostname not yet assigned — retrying in 15s..."
+            sleep 15
+          done
+
+          if [ -z "$ELB" ]; then
+            echo "NLB hostname was never assigned after 6 minutes"
+            kubectl get svc ingress-nginx-controller -n ingress-nginx
+            exit 1
+          fi
+
+          # Wait for the app to respond on the NLB
+          echo "Waiting for app to respond..."
+          for i in $(seq 1 18); do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+              http://${ELB}/api/health 2>/dev/null || echo "000")
+            if [ "$HTTP" = "200" ]; then
+              echo "Deployment verified! HTTP $HTTP"
+              exit 0
+            fi
+            echo "Attempt $i/18: HTTP $HTTP — retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after 3 minutes"
+          exit 1

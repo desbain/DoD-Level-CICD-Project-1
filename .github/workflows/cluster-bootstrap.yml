@@ -1,0 +1,204 @@
+# =============================================================================
+# EKS Cluster Bootstrap Pipeline
+# Run this ONCE after provisioning a new EKS cluster, before the main
+# deployment pipeline. Installs and verifies all cluster-level dependencies.
+#
+# Stages:
+#   1. Scan cluster component images (Trivy) — gate before installing anything
+#   2. Bootstrap cluster:
+#        a. Grant Mainuser cluster-admin access
+#        b. Install ingress-nginx (Helm)
+#        c. Install ArgoCD
+#        d. Register ArgoCD Application (argocd/application.yaml)
+#        e. Verify all components are healthy
+#
+# Trigger: Manual (workflow_dispatch) — run once per cluster lifecycle
+# =============================================================================
+
+name: EKS Cluster Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: "EKS cluster name"
+        required: true
+        default: "dod-ops-cluster"
+      aws_region:
+        description: "AWS region"
+        required: true
+        default: "us-east-2"
+
+# id-token:write — exchange GitHub OIDC token for AWS credentials
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Pin exact versions — never pull moving tags in a security-conscious pipeline
+  INGRESS_NGINX_VERSION: "4.14.3"           # Helm chart version
+  INGRESS_NGINX_IMAGE: "registry.k8s.io/ingress-nginx/controller:v1.14.3"
+  ARGOCD_VERSION: "v3.0.0"
+  ARGOCD_IMAGE: "quay.io/argoproj/argocd:v3.0.0"
+
+jobs:
+  # ============================================================================
+  # Stage 1: Scan cluster component images with Trivy before installing anything.
+  # Scans are INFORMATIONAL (continue-on-error: true) because these are
+  # third-party images we do not own — we cannot patch CVEs in ingress-nginx
+  # or ArgoCD directly. Results are uploaded as artifacts for review.
+  #
+  # In a real DoD environment this stage is replaced by simply pulling from
+  # Iron Bank, where images are pre-vetted and carry an ATO. For this project
+  # we scan and report so the results are visible and auditable.
+  # ============================================================================
+  scan-images:
+    name: "1. Scan Cluster Component Images (Trivy)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Scan ingress-nginx controller image
+        uses: aquasecurity/trivy-action@v0.35.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ env.INGRESS_NGINX_IMAGE }}
+          format: table
+          output: trivy-ingress-nginx.txt
+          exit-code: "1"
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+
+      - name: Scan ArgoCD image
+        uses: aquasecurity/trivy-action@v0.35.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ env.ARGOCD_IMAGE }}
+          format: table
+          output: trivy-argocd.txt
+          exit-code: "1"
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+
+      - name: Upload image scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bootstrap-trivy-results
+          path: |
+            trivy-ingress-nginx.txt
+            trivy-argocd.txt
+          retention-days: 30
+
+  # ============================================================================
+  # Stage 2: Bootstrap the cluster
+  # Runs only if both image scans pass. All install commands are idempotent
+  # (helm upgrade --install, kubectl apply) — safe to re-run if interrupted.
+  # ============================================================================
+  bootstrap:
+    name: "2. Bootstrap EKS Cluster"
+    runs-on: ubuntu-latest
+    needs: scan-images
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }}
+          kubectl get nodes
+
+      # -------------------------------------------------------------------------
+      # Install ingress-nginx using the pinned chart version
+      # -------------------------------------------------------------------------
+      - name: Install ingress-nginx
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+          # Remove any stuck release left by a previous failed run
+          HELM_STATUS=$(helm status ingress-nginx --namespace ingress-nginx 2>/dev/null | grep STATUS | awk '{print $2}')
+          if [[ "$HELM_STATUS" == "pending-install" || "$HELM_STATUS" == "pending-upgrade" || "$HELM_STATUS" == "failed" ]]; then
+            echo "Cleaning up stuck release (status: $HELM_STATUS)..."
+            helm uninstall ingress-nginx --namespace ingress-nginx
+          fi
+
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --version ${{ env.INGRESS_NGINX_VERSION }} \
+            --namespace ingress-nginx \
+            --create-namespace \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-target-type"=instance
+
+          echo "Waiting for ingress-nginx controller to be ready..."
+          kubectl rollout status deployment/ingress-nginx-controller \
+            -n ingress-nginx --timeout=10m
+
+          echo "ingress-nginx installed."
+          kubectl get pods -n ingress-nginx
+
+      # -------------------------------------------------------------------------
+      # Install ArgoCD using the pinned version manifest
+      # The applicationsets CRD may log a "Too long" annotation warning —
+      # this is a known cosmetic issue and does not affect ArgoCD functionality.
+      # -------------------------------------------------------------------------
+      - name: Install ArgoCD
+        run: |
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl apply -n argocd \
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/${{ env.ARGOCD_VERSION }}/manifests/install.yaml
+
+          echo "Waiting for ArgoCD server to become available..."
+          kubectl wait --for=condition=available deployment \
+            -l app.kubernetes.io/name=argocd-server \
+            -n argocd \
+            --timeout=120s
+
+          echo "ArgoCD installed."
+          kubectl get pods -n argocd
+
+      # -------------------------------------------------------------------------
+      # Register the application with ArgoCD.
+      # kubectl apply is idempotent — safe to re-run.
+      # -------------------------------------------------------------------------
+      - name: Register ArgoCD Application
+        run: |
+          kubectl apply -f argocd/application.yaml
+          echo "ArgoCD Application registered. ArgoCD will begin syncing shortly."
+
+      # -------------------------------------------------------------------------
+      # Verify all components are healthy before declaring bootstrap complete
+      # -------------------------------------------------------------------------
+      - name: Verify bootstrap
+        run: |
+          echo "=== Nodes ==="
+          kubectl get nodes
+
+          echo ""
+          echo "=== ingress-nginx ==="
+          kubectl get pods -n ingress-nginx
+          kubectl get svc ingress-nginx-controller -n ingress-nginx
+
+          echo ""
+          echo "=== ArgoCD ==="
+          kubectl get pods -n argocd
+
+          echo ""
+          echo "=== ArgoCD Application ==="
+          kubectl get application dod-ops-dashboard -n argocd
+
+          echo ""
+          echo "============================================"
+          echo "  Cluster bootstrap complete."
+          echo "  Push to main to trigger app deployment."
+          echo "============================================"

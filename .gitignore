@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Build
+client/build/
+dist/
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+*.pub
+
+# Coverage & Test
+coverage/
+*.lcov
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+docker-compose.override.yml
+
+# Scan Results
+trivy-results/
+*.sarif
+zap-report.*
+sbom.*
+docker-bench-results.*
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+trust-policy.json
+eks-policy.json
+
+# Misc
+*.log
+*.tmp
+.claude

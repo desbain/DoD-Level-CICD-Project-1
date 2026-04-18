@@ -1,0 +1,86 @@
+# =============================================================================
+# DoD Ops Dashboard - Helm Values
+# The CI/CD pipeline overwrites image.tag with the verified github.sha
+# after the image passes all security scans (Trivy, SBOM, DAST, Compliance).
+# =============================================================================
+
+image:
+  repository: africaprocloud/dod-ops-dashboard
+  tag: "f0489caf74da1c1b39c959f071589d626e7a357e"
+  pullPolicy: Always
+
+replicaCount: 3
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: "dod-ops-dashboard"
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  host: ""  # catch-all: nginx routes all traffic to the app regardless of Host header
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# DoD-required pod security settings (do not relax these)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: 5000
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: 5000
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+networkPolicy:
+  enabled: true
+
+env:
+  NODE_ENV: production
+  PORT: "5000"

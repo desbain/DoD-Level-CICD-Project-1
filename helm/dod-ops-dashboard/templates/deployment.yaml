@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dod-ops-dashboard.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dod-ops-dashboard.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "dod-ops-dashboard.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # zero-downtime deployments
+  template:
+    metadata:
+      labels:
+        {{- include "dod-ops-dashboard.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force pod restart when values.yaml changes (e.g. image tag update)
+        checksum/values: {{ toYaml .Values | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default (include "dod-ops-dashboard.fullname" .) }}
+      automountServiceAccountToken: false
+
+      # DoD: pod-level security context
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+
+          env:
+            - name: NODE_ENV
+              value: {{ .Values.env.NODE_ENV | quote }}
+            - name: PORT
+              value: {{ .Values.env.PORT | quote }}
+
+          # DoD: container-level security context
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+
+          # Writable tmpfs for /tmp (mirrors --tmpfs /tmp in Docker)
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # Spread pods across nodes for HA
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              {{- include "dod-ops-dashboard.selectorLabels" . | nindent 14 }}

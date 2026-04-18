@@ -1,0 +1,146 @@
+.mission-tracker {
+  min-height: 400px;
+}
+
+.header-count {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.mission-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mission-table thead th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-weight: 500;
+}
+
+.mission-table tbody tr {
+  border-bottom: 1px solid rgba(42, 58, 79, 0.4);
+  transition: background 0.2s;
+}
+
+.mission-table tbody tr:hover {
+  background: var(--bg-card-hover);
+}
+
+.mission-table td {
+  padding: 12px;
+  color: var(--text-secondary);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-cyan);
+}
+
+.mission-name {
+  color: var(--text-primary);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+.status-active {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+}
+
+.status-pending {
+  background: rgba(255, 149, 0, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(255, 149, 0, 0.3);
+}
+
+.status-complete {
+  background: rgba(0, 255, 136, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+.priority-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+.priority-critical {
+  background: rgba(255, 59, 92, 0.15);
+  color: var(--accent-red);
+  border: 1px solid rgba(255, 59, 92, 0.3);
+  animation: criticalPulse 2s ease-in-out infinite;
+}
+
+.priority-high {
+  background: rgba(255, 149, 0, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(255, 149, 0, 0.3);
+}
+
+.priority-medium {
+  background: rgba(255, 215, 0, 0.15);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(255, 215, 0, 0.3);
+}
+
+.priority-low {
+  background: rgba(0, 255, 136, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+@keyframes criticalPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.progress-bar {
+  position: relative;
+  width: 100%;
+  height: 20px;
+  background: rgba(42, 58, 79, 0.5);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+.progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}

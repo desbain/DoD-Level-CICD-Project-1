@@ -1,0 +1,125 @@
+.threat-alerts {
+  max-height: 600px;
+  display: flex;
+  flex-direction: column;
+}
+
+.alerts-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 500px;
+}
+
+.alert-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  background: rgba(26, 35, 50, 0.6);
+  border: 1px solid var(--border-color);
+  transition: border-color 0.2s;
+}
+
+.alert-item:hover {
+  border-color: var(--text-muted);
+}
+
+.alert-item.acknowledged {
+  opacity: 0.55;
+}
+
+.alert-indicator {
+  width: 4px;
+  min-height: 100%;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.severity-critical .alert-indicator {
+  background: var(--accent-red);
+  box-shadow: 0 0 8px rgba(255, 59, 92, 0.5);
+  animation: alertPulse 1.5s ease-in-out infinite;
+}
+
+.severity-high .alert-indicator {
+  background: var(--accent-orange);
+  box-shadow: 0 0 6px rgba(255, 149, 0, 0.4);
+}
+
+.severity-medium .alert-indicator {
+  background: var(--accent-yellow);
+}
+
+.severity-low .alert-indicator {
+  background: var(--accent-green);
+}
+
+@keyframes alertPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.alert-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.alert-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.alert-severity {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 2px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.alert-severity.severity-critical {
+  background: rgba(255, 59, 92, 0.2);
+  color: var(--accent-red);
+}
+
+.alert-severity.severity-high {
+  background: rgba(255, 149, 0, 0.2);
+  color: var(--accent-orange);
+}
+
+.alert-severity.severity-medium {
+  background: rgba(255, 215, 0, 0.2);
+  color: var(--accent-yellow);
+}
+
+.alert-severity.severity-low {
+  background: rgba(0, 255, 136, 0.2);
+  color: var(--accent-green);
+}
+
+.alert-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+}
+
+.alert-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.alert-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}

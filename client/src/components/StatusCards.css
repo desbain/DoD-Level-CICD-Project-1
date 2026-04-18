@@ -1,0 +1,79 @@
+.status-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.status-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s, transform 0.2s;
+}
+
+.status-card:hover {
+  border-color: var(--accent-cyan);
+  transform: translateY(-2px);
+}
+
+.card-icon {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 700;
+  opacity: 0.8;
+  min-width: 40px;
+  text-align: center;
+}
+
+.card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.card-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 2px;
+}
+
+.card-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.card-suffix {
+  font-size: 14px;
+  opacity: 0.6;
+  font-weight: 500;
+}
+
+.card-glow {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  opacity: 0.6;
+}
+
+@media (max-width: 1200px) {
+  .status-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .status-cards {
+    grid-template-columns: 1fr;
+  }
+}
