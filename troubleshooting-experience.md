@@ -56,3 +56,23 @@ Instead of haphazardly attaching full Administrator access to bypass the error, 
 
 **Result:**
 The pipeline successfully fetched the kubeconfig and authenticated securely to the Kubernetes control plane. By resisting the urge to over-provision permissions, I maintained a strict security posture for the CI/CD role while elegantly resolving the deployment blocker.
+
+---
+
+## Scenario: Kubernetes RBAC Authentication Failure (Missing EKS Access Entry)
+
+**Situation:**
+During the execution of a GitHub Actions EKS bootstrap pipeline, the AWS CLI successfully generated a kubeconfig file. However, the subsequent `kubectl` command failed immediately with the error: `error: You must be logged in to the server (the server has asked for the client to provide credentials)`. 
+
+**Task:**
+I needed to diagnose why the Kubernetes Control Plane was rejecting the AWS IAM token that was cleanly generated and verified seconds prior.
+
+**Action:**
+I methodically investigated the boundary between AWS IAM and Kubernetes RBAC:
+1. **Validating Pipeline Output:** I confirmed through the logs that `aws eks update-kubeconfig` succeeded, meaning the pipeline's AWS IAM role definitively had network reachability and basic AWS API permissions. The failure was happening strictly at the Kubernetes API server boundary.
+2. **Inspecting Cluster Access Entries:** I used the AWS CLI (`aws eks list-access-entries`) to audit the exact IAM roles explicitly permitted to interface with the Kubernetes API for that specific cluster (`dod-ops-cluster-1`). 
+3. **Identifying the Mapping Gap:** The CLI output revealed that the CI/CD pipeline's IAM role (`dod-ops-cluster-1-github-actions`) was completely missing from the cluster's Access Entries list. Kubernetes was accurately authenticating the AWS token, but rejecting it because the role had no mapped privileges inside the cluster.
+4. **Remediating Kubernetes RBAC via AWS:** Instead of manually hacking `aws-auth` ConfigMaps (the legacy, error-prone approach), I utilized modern EKS Access Entries. I ran the `aws eks create-access-entry` command to natively register the IAM role, followed directly by `aws eks associate-access-policy` to bind the role to the `AmazonEKSClusterAdminPolicy` access scope.
+
+**Result:**
+The Kubernetes Control Plane instantly recognized the GitHub Actions IAM role as a valid Cluster Administrator. The `kubectl` commands succeeded, proving a strong understanding of how external AWS IAM identities securely map into granular Kubernetes RBAC systems.
