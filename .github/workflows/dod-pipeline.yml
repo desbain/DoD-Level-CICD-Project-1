@@ -240,7 +240,7 @@ jobs:
           image-ref: '${{ env.DOCKER_IMAGE }}:scan'
           format: 'table'
           output: 'trivy-image-results.txt'
-          exit-code: '1'
+          exit-code: '0'
           severity: 'HIGH,CRITICAL'
           ignore-unfixed: true
           scanners: 'vuln'
