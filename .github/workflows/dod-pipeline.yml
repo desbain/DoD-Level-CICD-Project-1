@@ -529,7 +529,7 @@ jobs:
           aws-region: us-east-2
 
       - name: Configure kubectl
-        run: aws eks update-kubeconfig --name dod-ops-cluster --region us-east-2
+        run: aws eks update-kubeconfig --name dod-ops-cluster-1 --region us-east-2
 
       - name: Ensure ArgoCD Application is registered
         run: kubectl apply -f argocd/application.yaml
