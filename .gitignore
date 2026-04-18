@@ -42,8 +42,8 @@ terraform/.terraform/
 terraform/.terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
-trust-policy.json
-eks-policy.json
+# trust-policy.json
+# eks-policy.json
 
 # Misc
 *.log
