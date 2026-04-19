@@ -171,10 +171,10 @@ jobs:
       # Register the application with ArgoCD.
       # kubectl apply is idempotent — safe to re-run.
       # -------------------------------------------------------------------------
-      - name: Register ArgoCD Application
+      - name: Register ArgoCD Applications
         run: |
-          kubectl apply -f argocd/application.yaml
-          echo "ArgoCD Application registered. ArgoCD will begin syncing shortly."
+          kubectl apply -f argocd/
+          echo "ArgoCD Applications registered. ArgoCD will begin syncing shortly."
 
       # -------------------------------------------------------------------------
       # Verify all components are healthy before declaring bootstrap complete

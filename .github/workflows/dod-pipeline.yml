@@ -531,8 +531,8 @@ jobs:
       - name: Configure kubectl
         run: aws eks update-kubeconfig --name dod-ops-cluster-1 --region us-east-2
 
-      - name: Ensure ArgoCD Application is registered
-        run: kubectl apply -f argocd/application.yaml
+      - name: Ensure ArgoCD Applications are registered
+        run: kubectl apply -f argocd/
 
       - name: Update image tag in Helm values
         run: |
