@@ -23,7 +23,7 @@ on:
       cluster_name:
         description: "EKS cluster name"
         required: true
-        default: "dod-ops-cluster"
+        default: "dod-ops-cluster-1"
       aws_region:
         description: "AWS region"
         required: true
