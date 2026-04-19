@@ -76,3 +76,40 @@ I methodically investigated the boundary between AWS IAM and Kubernetes RBAC:
 
 **Result:**
 The Kubernetes Control Plane instantly recognized the GitHub Actions IAM role as a valid Cluster Administrator. The `kubectl` commands succeeded, proving a strong understanding of how external AWS IAM identities securely map into granular Kubernetes RBAC systems.
+
+---
+
+## Scenario: AWS EKS Helm Pre-Install Timeout (Zero Compute Nodes)
+
+**Situation:**
+During the GitHub Actions `cluster-bootstrap` workflow execution, the pipeline completely authenticated to the cluster and reached the `helm upgrade --install ingress-nginx` step. However, Helm hung indefinitely and ultimately crashed out with the error: `Error: failed pre-install: 1 error occurred: * timed out waiting for the condition`.
+
+**Task:**
+I needed to diagnose why the `ingress-nginx` pre-install webhook job was freezing in a timeout state on our newly provisioned EKS cluster.
+
+**Action:**
+I investigated the underlying infrastructure supporting the Kubernetes cluster, suspecting a compute starvation or networking boundary issue:
+1. **Cluster State Validation:** First, I intercepted the cluster API using `kubectl get nodes`. The output explicitly returned `No resources found`, decisively diagnosing the underlying issue. The EKS Control Plane was completely functional and reachable, but there were literally zero compute instances (EC2 nodes) attached to it!
+2. **Infrastructure Auditing:** I queried the AWS CLI (`aws eks list-nodegroups` and `aws autoscaling describe-auto-scaling-groups`) and confirmed that the newly minted `dod-ops-cluster-1` EKS cluster legitimately lacked an ASG or managed node group. The control plane was generated perfectly, but the compute layer allocation was inexplicably orphaned.
+3. **Compute Allocation Remediation:** Rather than spinning circles blindly trying to modify Helm chart constraints, I went straight to the true root cause and instantly provisioned the missing underlying infrastructure architecture. I executed the AWS CLI `eks create-nodegroup` command, strategically passing our existing private subnets, predefined `eks_worker_nodes_role`, and modernizing our constraints to utilize `AL2023_x86_64_STANDARD` instances to satisfy Kubernetes v1.35 platform constraints.
+
+**Result:**
+The managed node group successfully deployed, attaching active `t3.medium` instances to the cluster. Upon executing `kubectl get nodes` to verify the compute layer, I safely re-triggered the pipeline which allowed the Helm pre-install webhook to instantly schedule the Pod, generate its TLS certificates, and reliably install `ingress-nginx` seamlessly.
+
+---
+
+## Scenario: CI/CD Pipeline Scanning False-Failures (Trivy Exit Code 1)
+
+**Situation:**
+During the GitHub Actions `cluster-bootstrap` workflow execution, the pipeline integrated Aquasecurity Trivy to scan third-party cluster components (like `ingress-nginx` and `argocd`). The pipeline was specifically designed to be purely informational at this bootstrap stage, utilizing `continue-on-error: true`. However, the Github Actions UI explicitly flagged these steps with red error marks because Trivy naturally found vulnerabilities in the external third-party images.
+
+**Task:**
+I needed to gracefully configure the pipeline so that it securely executes the scans and uploads the vulnerability reports as artifacts, but without triggering explicit step-level failure alerts in the CI/CD dashboard for container images outside of our direct codebase control.
+
+**Action:**
+Instead of removing the critical security scan entirely or simply ignoring the underlying issue, I audited the action's behavior matrix:
+1. **Behavioral Analysis:** I identified that Trivy natively returns an `Exit Code 1` to the operating system whenever vulnerabilities matching the target severity (`HIGH,CRITICAL`) are discovered. GitHub Actions intercepts this non-zero exit code and organically flags the isolated step as a strict failure.
+2. **Configuration Adjustment:** I modified the `aquasecurity/trivy-action` YAML configuration block in the `cluster-bootstrap.yml` workflow file. I explicitly overrode the parameter from `exit-code: "1"` to `exit-code: "0"`, shifting the scanner from enforcement mode to reporting mode. 
+
+**Result:**
+The CI/CD pipeline stringently executed the security scans and retained the vulnerability report artifacts for precise long-term auditing. However, Trivy gracefully exited with code `0` even when vulnerabilities were technically present. This definitively eliminated the false-positive failure alerts in the GitHub Actions UI, achieving a perfectly "green" pipeline state while preserving our security visibility footprint.
