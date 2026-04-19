@@ -1,0 +1,65 @@
+name: Destroy AWS Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Safety Check: Type 'DESTROY' (all caps) to confirm tear-down"
+        required: true
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    name: Tear Down EKS and Infrastructure
+    runs-on: ubuntu-latest
+    # Hard stop to prevent accidental clicks
+    if: github.event.inputs.confirm == 'DESTROY'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Configure kubectl
+        run: |
+          # Grab the config so we can delete the software components first
+          aws eks update-kubeconfig --name dod-ops-cluster-1 --region us-east-2 || echo "EKS Cluster unreachable or deleted."
+
+      - name: Clean up Kubernetes LoadBalancers
+        run: |
+          # Delete ArgoCD, which strips the dashboard and Prometheus
+          kubectl delete -f argocd/ --ignore-not-found=true || true
+          
+          # Uninstalling the ingress-nginx chart forces AWS to delete the connected Elastic Load Balancer (ELB)
+          helm uninstall ingress-nginx --namespace ingress-nginx --ignore-not-found=true || true
+          
+          echo "Waiting 60 seconds for AWS to physically destroy the Load Balancers..."
+          sleep 60
+
+      - name: Delete Manual EKS Node Group
+        run: |
+          echo "Triggering deletion of manual compute instances..."
+          aws eks delete-nodegroup --cluster-name dod-ops-cluster-1 --nodegroup-name dod-nodes --region us-east-2 || true
+          
+          echo "Blocking pipeline until NodeGroup is 100% dissolved from AWS..."
+          aws eks wait nodegroup-deleted --cluster-name dod-ops-cluster-1 --nodegroup-name dod-nodes --region us-east-2 || true
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: terraform destroy --auto-approve
